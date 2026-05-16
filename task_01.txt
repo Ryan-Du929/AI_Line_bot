@@ -1,0 +1,6 @@
+任務目標：建立 Line Messaging API 通訊閘道
+1. 請在 /app/workspace 資料夾中，建立一個名為 line_bot 的專案資料夾。
+2. 使用 Python 與 FastAPI 撰寫一個輕量級的 Webhook 接收器。
+3. 程式碼必須包含基本的訊息接收與回聲(Echo)測試功能。
+4. 完成後，請在 workspace 內生成一份 README.md，告訴我需要去 Line 後台申請哪些金鑰，以及該如何搭配 Cloudflare Tunnel 啟動這支程式。
+請開始執行，不要詢問，直接產生檔案。
