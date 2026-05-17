@@ -26,8 +26,10 @@ configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # AI Agent API - 從環境變數讀取，若無則用 Render 上的 ai-agent 服務
+APP_VERSION = "v2.1.0"
+
 AI_AGENT_URL = os.getenv("AI_AGENT_URL", "https://ai-agent-7s7g.onrender.com/chat")
-logger.info(f"AI_AGENT_URL configured as: {AI_AGENT_URL}")
+logger.info(f"[{APP_VERSION}] AI_AGENT_URL configured as: {AI_AGENT_URL}")
 
 
 @app.get("/")
@@ -55,6 +57,7 @@ async def webhook(request: Request):
 
 
 def ask_ai_agent(user_message: str, user_id: str) -> str:
+    logger.info(f"[{APP_VERSION}] Sending to AI_AGENT_URL: {AI_AGENT_URL}")
     """Send user message to AI Agent and get reply."""
     try:
         resp = requests.post(
