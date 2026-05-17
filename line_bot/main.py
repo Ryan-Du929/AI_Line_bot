@@ -25,8 +25,8 @@ CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# AI Agent API - 透過你的 Cloudflare Tunnel
-AI_AGENT_URL = "https://polyester-couples-velocity-butter.trycloudflare.com/chat"
+# AI Agent API - 從環境變數讀取，若無則用 Render 上的 ai-agent 服務
+AI_AGENT_URL = os.getenv("AI_AGENT_URL", "https://ai-agent-7s7g.onrender.com/chat")
 
 
 @app.get("/")
