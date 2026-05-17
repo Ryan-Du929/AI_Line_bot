@@ -91,5 +91,5 @@ def process_message(message: str) -> str:
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))
-    uvicorn.run("agent_server:app", host="0.0.0.0", port=port, reload=True,
-                log_level="debug", access_log=True)
+    uvicorn.run("agent_server:app", host="0.0.0.0", port=port, reload=False,
+                log_level="info", access_log=True)
