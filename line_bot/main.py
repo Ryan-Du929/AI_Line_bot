@@ -27,6 +27,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 # AI Agent API - 從環境變數讀取，若無則用 Render 上的 ai-agent 服務
 AI_AGENT_URL = os.getenv("AI_AGENT_URL", "https://ai-agent-7s7g.onrender.com/chat")
+logger.info(f"AI_AGENT_URL configured as: {AI_AGENT_URL}")
 
 
 @app.get("/")
