@@ -43,6 +43,20 @@ async def health():
     return {"status": "healthy", "agent_url": AI_AGENT_URL}
 
 
+@app.get("/ping")
+async def ping():
+    """Keep-alive endpoint: called externally every 10 min to prevent Render Free sleep"""
+    import requests as req
+    results = {}
+    for url in ["https://ai-agent-7s7g.onrender.com", "https://ai-line-bot-4hhb.onrender.com"]:
+        try:
+            r = req.get(url, timeout=10)
+            results[url] = r.status_code
+        except Exception as e:
+            results[url] = str(e)
+    return {"ping": results}
+
+
 @app.get("/debug/agent_test")
 async def debug_agent_test():
     """內建測試：直接呼叫 ai-agent 並回傳結果"""
