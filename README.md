@@ -120,4 +120,4 @@ Cloudflare 會產生一個類似 `https://xxxx-xxxx-xxxx.trycloudflare.com` 的�
 - **Channel Secret** 和 **Channel Access Token** 請勿外流或 commit 到版本控制
 - 生產環境建議使用 **Long-lived token** 並定期更換
 - 若使用雲端服務（Render / Railway / Fly.io），可將環境變數設定在該平台，不需要 `.env`
-- 本地開發時若只想測試 API，可用 `curl` 直接打在 `localhost:8000/health` 確認服務是否活著
+- 本地開發時若只想測試 API，可用 `curl` 直接打在 `localhost:8000/health` 確認服務是否活著# Keep-alive marker
