@@ -78,6 +78,16 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 
+@app.get("/test_llm")
+async def test_llm():
+    """測試 LLM 連線（不需要 LINE signature）"""
+    try:
+        reply = call_llm_direct("說一句簡單的嗨就好")
+        return {"status": "ok", "reply": reply}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 def call_llm_direct(message: str) -> str:
     """直接 call NVIDIA NIM / DeepSeek，跳過 AI Agent server"""
     if not OPENAI_API_KEY:
