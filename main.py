@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import requests
+import threading
+import time
 from fastapi import FastAPI, Request, HTTPException
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -23,15 +25,49 @@ CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# === 修改這裡：直接用 os.getenv 讀取 ===
+# === AI Agent URL ===
 AGENT_BASE = os.getenv("AI_AGENT_URL", "https://ai-agent-7s7g.onrender.com").rstrip("/")
 AI_AGENT_URL = AGENT_BASE + "/chat"
+
+# === 要 ping 的目標（防止 Render Free 休眠）=== 
+KEEP_ALIVE_TARGETS = [
+    "https://ai-agent-7s7g.onrender.com",
+    "https://ai-line-bot-4hhb.onrender.com",
+]
+KEEP_ALIVE_INTERVAL = 300  # 5 分鐘，Render Free 通常 5-15 分鐘休眠
+
 logger.info(f"========== CONFIG ==========")
 logger.info(f"AI_AGENT_URL = {AI_AGENT_URL}")
 logger.info(f"CHANNEL_ACCESS_TOKEN set = {bool(CHANNEL_ACCESS_TOKEN)}")
 logger.info(f"CHANNEL_SECRET set = {bool(CHANNEL_SECRET)}")
+logger.info(f"Keep-alive interval: {KEEP_ALIVE_INTERVAL}s")
 logger.info(f"============================")
 
+
+# ── 背景 Keep-Alive 執行緒 ──────────────────────────────
+def keep_alive_loop():
+    """定時 ping 所有服務，防止 Render Free 方案休眠"""
+    logger.info("[keep-alive] 背景執行緒啟動")
+    while True:
+        try:
+            for url in KEEP_ALIVE_TARGETS:
+                try:
+                    r = requests.get(url, timeout=10)
+                    logger.debug(f"[keep-alive] Ping {url} → {r.status_code}")
+                except Exception as e:
+                    logger.warning(f"[keep-alive] Ping {url} failed: {e}")
+        except Exception as e:
+            logger.error(f"[keep-alive] 迴圈錯誤: {e}")
+        time.sleep(KEEP_ALIVE_INTERVAL)
+
+
+# 在模組載入時啟動背景執行緒
+_keep_alive_thread = threading.Thread(target=keep_alive_loop, daemon=True)
+_keep_alive_thread.start()
+logger.info("[keep-alive] 背景執行緒已啟動")
+
+
+# ── API Endpoints ────────────────────────────────────────
 
 @app.get("/")
 async def root():
@@ -45,12 +81,11 @@ async def health():
 
 @app.get("/ping")
 async def ping():
-    """Keep-alive endpoint: called externally every 10 min to prevent Render Free sleep"""
-    import requests as req
+    """Keep-alive endpoint: 被外部呼叫時也順便 ping 其他服務"""
     results = {}
-    for url in ["https://ai-agent-7s7g.onrender.com", "https://ai-line-bot-4hhb.onrender.com"]:
+    for url in KEEP_ALIVE_TARGETS:
         try:
-            r = req.get(url, timeout=10)
+            r = requests.get(url, timeout=10)
             results[url] = r.status_code
         except Exception as e:
             results[url] = str(e)
@@ -64,7 +99,7 @@ async def debug_agent_test():
         resp = requests.post(
             AI_AGENT_URL,
             json={"message": "ping", "user_id": "debug_test"},
-            timeout=15,
+            timeout=30,
         )
         return {
             "status_code": resp.status_code,
@@ -88,29 +123,50 @@ async def webhook(request: Request):
 
 
 def ask_ai_agent(user_message: str, user_id: str) -> str:
+    """呼叫 AI Agent，如果 timeout 則重試一次（應付 Render Free 冷啟動）"""
     logger.info(f"ask_ai_agent CALLED: target={AI_AGENT_URL}, msg={user_message[:50]}")
-    try:
-        resp = requests.post(
-            AI_AGENT_URL,
-            json={"message": user_message, "user_id": user_id},
-            timeout=30,
-        )
-        logger.info(f"ask_ai_agent RESPONSE: status={resp.status_code}, body={resp.text[:200]}")
-        if resp.status_code == 200:
-            data = resp.json()
-            return data.get("reply", "抱歉，我沒理解你的意思")
-        else:
-            logger.error(f"Agent error: {resp.status_code} {resp.text[:300]}")
-            return "系統忙碌中，請稍後再試"
-    except requests.exceptions.ConnectTimeout:
-        logger.error("Connection timed out")
-        return "連線超時，請稍後再試"
-    except requests.exceptions.ConnectionError as e:
-        logger.error(f"Connection refused: {e}")
-        return "無法連線到 AI 服務"
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        return "系統異常，請稍後再試"
+    
+    max_retries = 2  # 第一次嘗試 + 一次重試
+    last_error = ""
+    
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(
+                AI_AGENT_URL,
+                json={"message": user_message, "user_id": user_id},
+                timeout=60 if attempt > 0 else 30,
+                # 第一次 30 秒 timeout；重試時給 60 秒（冷啟動可能較慢）
+            )
+            logger.info(f"ask_ai_agent RESPONSE (attempt {attempt+1}): status={resp.status_code}")
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                reply = data.get("reply", "抱歉，我沒理解你的意思")
+                if data.get("fallback"):
+                    logger.warning("AI Agent 使用了 fallback 模式")
+                return reply
+            else:
+                last_error = f"Agent error: {resp.status_code} {resp.text[:200]}"
+                logger.error(last_error)
+                
+        except requests.exceptions.ConnectTimeout:
+            last_error = "連線超時"
+            logger.warning(f"ask_ai_agent attempt {attempt+1}: {last_error}")
+            if attempt < max_retries - 1:
+                logger.info(f"重試中... ({attempt+1}/{max_retries})")
+                time.sleep(3)  # 重試前等 3 秒
+        except requests.exceptions.ConnectionError as e:
+            last_error = f"連線拒絕: {e}"
+            logger.warning(f"ask_ai_agent attempt {attempt+1}: {last_error}")
+            if attempt < max_retries - 1:
+                logger.info(f"重試中... ({attempt+1}/{max_retries})")
+                time.sleep(5)
+        except Exception as e:
+            last_error = f"非預期錯誤: {e}"
+            logger.error(f"ask_ai_agent attempt {attempt+1}: {last_error}")
+            break  # 非連線錯誤不重試
+    
+    return "系統正在啟動中，請稍後再傳一次 🙏"
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -134,4 +190,5 @@ def handle_text_message(event: MessageEvent):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    logger.info(f"Starting LINE Bot on port {port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

@@ -1,11 +1,13 @@
 """
-AI Agent Server v4.0 — 真正的 LLM 回應，接入 NVIDIA NIM / DeepSeek V4 Flash
+AI Agent Server v4.1 — 真正的 LLM 回應 + 內建 Keep-Alive + Retry 支援
 LINE 使用者 → LINE Bot → AI Agent → LLM → 回覆
 """
 import os
 import json
 import logging
 import traceback
+import threading
+import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -19,6 +21,13 @@ logger = logging.getLogger(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://integrate.api.nvidia.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-ai/deepseek-v4-flash")
+
+# ── Keep-Alive 設定 ──────────────────────────────────────
+KEEP_ALIVE_TARGETS = [
+    "https://ai-agent-7s7g.onrender.com/health",
+    "https://ai-line-bot-4hhb.onrender.com/health",
+]
+KEEP_ALIVE_INTERVAL = 240  # 4 分鐘
 
 # ── Lucas 的 System Prompt ────────────────────────────────
 LUCAS_SYSTEM_PROMPT = """你是 Lucas，一個 AI agent 團隊的首腦與任務總管。
@@ -39,25 +48,51 @@ LUCAS_SYSTEM_PROMPT = """你是 Lucas，一個 AI agent 團隊的首腦與任務
 - 條列式說明比段落更易讀
 - 需要使用者決策時，提供 2-3 個選項"""
 
-app = FastAPI(title="AI Agent Server v4.0")
+app = FastAPI(title="AI Agent Server v4.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+
+# ── 背景 Keep-Alive 執行緒 ──────────────────────────────
+def keep_alive_loop():
+    """定時 ping 自己和其他服務，防止 Render Free 休眠"""
+    logger.info("[keep-alive] 背景執行緒啟動")
+    import requests as req
+    while True:
+        try:
+            for url in KEEP_ALIVE_TARGETS:
+                try:
+                    r = req.get(url, timeout=10)
+                    logger.debug(f"[keep-alive] Ping {url} → {r.status_code}")
+                except Exception as e:
+                    logger.warning(f"[keep-alive] Ping {url} failed: {e}")
+        except Exception as e:
+            logger.error(f"[keep-alive] 迴圈錯誤: {e}")
+        time.sleep(KEEP_ALIVE_INTERVAL)
+
+
+_keep_alive_thread = threading.Thread(target=keep_alive_loop, daemon=True)
+_keep_alive_thread.start()
+
+
+# ── API Models ───────────────────────────────────────────
 
 class ChatRequest(BaseModel):
     message: str
     user_id: str = "unknown"
 
 
+# ── API Endpoints ────────────────────────────────────────
+
 @app.get("/")
 async def root():
-    return {"status": "ok", "agent": "AI Agent Server v4.0 (Lucas)", "version": "4.0.0"}
+    return {"status": "ok", "agent": "AI Agent Server v4.1 (Lucas)", "version": "4.1.0"}
 
 
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
-        "version": "4.0.0",
+        "version": "4.1.0",
         "llm_configured": bool(OPENAI_API_KEY),
         "llm_model": OPENAI_MODEL,
     }
@@ -67,41 +102,36 @@ async def health():
 async def chat(req: ChatRequest):
     user_message = req.message
     user_id = req.user_id
-    logger.info(f"[v4.0.0] Received from {user_id}: {user_message[:100]}")
+    logger.info(f"[v4.1] Received from {user_id}: {user_message[:100]}")
     try:
         reply = await ask_llm(user_message, user_id)
-        return {"reply": reply, "user_id": user_id, "version": "4.0.0"}
+        return {"reply": reply, "user_id": user_id, "version": "4.1.0"}
     except Exception as e:
-        logger.error(f"Error: {e}\n{traceback.format_exc()}")
-        # Fallback: 如果 LLM 失敗，用規則式回應
+        logger.error(f"LLM failed: {e}\n{traceback.format_exc()}")
         reply = rule_fallback(user_message)
-        return {"reply": reply, "user_id": user_id, "version": "4.0.0", "fallback": True}
+        return {"reply": reply, "user_id": user_id, "version": "4.1.0", "fallback": True}
 
 
 async def ask_llm(message: str, user_id: str) -> str:
     """呼叫 LLM (NVIDIA NIM / DeepSeek) 來回應"""
     if not OPENAI_API_KEY:
         logger.warning("OPENAI_API_KEY not configured, using rule fallback")
-        return rule_fallback(message)
+        raise ValueError("API key not configured")
 
     client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
     
-    try:
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": LUCAS_SYSTEM_PROMPT},
-                {"role": "user", "content": message},
-            ],
-            temperature=0.7,
-            max_tokens=1024,
-        )
-        reply = response.choices[0].message.content.strip()
-        logger.info(f"LLM response ({len(reply)} chars): {reply[:80]}...")
-        return reply
-    except Exception as e:
-        logger.error(f"LLM call failed: {e}")
-        raise
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": LUCAS_SYSTEM_PROMPT},
+            {"role": "user", "content": message},
+        ],
+        temperature=0.7,
+        max_tokens=1024,
+    )
+    reply = response.choices[0].message.content.strip()
+    logger.info(f"LLM response ({len(reply)} chars): {reply[:80]}...")
+    return reply
 
 
 def rule_fallback(message: str) -> str:
@@ -128,6 +158,6 @@ async def debug_llm_test(req: ChatRequest):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8001))
-    logger.info(f"Starting AI Agent v4.0 on port {port}")
+    logger.info(f"Starting AI Agent v4.1 on port {port}")
     logger.info(f"LLM configured: {bool(OPENAI_API_KEY)}, model: {OPENAI_MODEL}")
     uvicorn.run("agent_server:app", host="0.0.0.0", port=port, reload=False)
